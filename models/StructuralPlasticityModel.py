@@ -1,23 +1,14 @@
 from brian2 import *
-#import brian2cuda
-#set_device("cuda_standalone")
-#import cupy as np
 import numpy as np
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
-import time 
+import os
  
 # TODO: make backend configurable cpu(numpy)/gpu(cupy) 
-import numpy as np
 backend = 'numpy'# if np.get_device() else 'numpy'
 xp = __import__(backend)
 
 import logging
-
-def connect_synases_fixed_indegree(synapses, indegree, N_post, N_pre):
-    for j in range(N_post):
-        pre_neurons = xp.random.choice(N_pre, indegree, replace=False)
-        synapses.connect(i=pre_neurons, j=j)
 
 class StructuralPlasticityModel:
     def __init__(self,
@@ -30,6 +21,8 @@ class StructuralPlasticityModel:
                 nu_ext = 15*kHz,
                 J = 0.1*mV,
                 g = 8,
+                eta = 1.5,
+                eps = 0.1,
                 delay = 1*ms,
                 tau_ca = 1*second,
                 delta_T_s = 100*ms,
@@ -41,8 +34,6 @@ class StructuralPlasticityModel:
                 processes = None):
 
         start_scope()
-        
-
 
         self.network = Network()
 
@@ -53,9 +44,15 @@ class StructuralPlasticityModel:
         self.V_res = V_res
         self.t_ref = t_ref
         self.tau_m = tau_m
+        
+        self.CE    = int(eps*self.N_E)         # number of incoming excitatory synapses per inhibitory neuron
+        self.CI    = int(eps*self.N_I)         # number of incoming inhibitory synapses per neuron  
 
         # Background Input
-        self.nu_ext = nu_ext/kHz
+        nu_th = V_th/(J*self.CE*tau_m)
+        nu_ex = eta*nu_th
+        self.nu_ext = nu_ex*1000#*self.CE
+
         # Synapses
         self.J = J# * self.tau_m/ms
         self.g = g
@@ -83,32 +80,38 @@ class StructuralPlasticityModel:
         da/dt = (nu - phi)/beta_a : 1
         '''
 
-        self.namespace = {'tau_m': self.tau_m, 'tau_ca': self.tau_ca, 'nu': self.nu, 'beta_d': self.beta_d, 'beta_a': self.beta_a, 'J': self.J, 'J_I': self.J_I, 'tau_m': self.tau_m, 'v_th': self.V_th, 'v_res': self.V_res, 't_ref': self.t_ref, 'delay': self.delay}
+        self.namespace = {
+            'tau_m': self.tau_m, 
+            'tau_ca': self.tau_ca, 
+            'nu': self.nu, 
+            'beta_d': self.beta_d, 
+            'beta_a': self.beta_a, 
+            'J': self.J, 
+            'J_I': self.J_I, 
+            'tau_m': self.tau_m, 
+            'v_th': self.V_th, 
+            'v_res': self.V_res, 
+            't_ref': self.t_ref, 
+            'delay': self.delay
+        }
 
         
         # Create Neurons
         self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, name='I')
         self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=1*Hz', refractory=self.t_ref, name='E')
-
-        self.network.add(self.E, self.I)
         
         self.E.nu_ext = nu_ext / kHz
         self.I.nu_ext = nu_ext / kHz
         
         # Static Synapses
-        #TODO: allow for autapses
         self.S_I_I = Synapses(self.I, self.I, on_pre='v_post += J_I', delay=self.delay, name='S_I_I')
-        #TODO: use fixed in-degree instead of probability
-        self.S_I_I.connect(condition='i != j', p=0.1)
-        #connect_synases_fixed_indegree(self.S_I_I, int(0.1*self.N_I), self.N_I, self.N_I)
+        self.S_I_I.connect(condition='i != j', p=eps)
         
         self.S_I_E = Synapses(self.I, self.E, on_pre='v_post += J_I', delay=self.delay, name='S_I_E')
-        self.S_I_E.connect(condition='i != j', p=0.1)
-        #connect_synases_fixed_indegree(self.S_I_E, int(0.1*self.N_I), self.N_E, self.N_I)
+        self.S_I_E.connect(condition='i != j', p=eps)
         
         self.S_E_I = Synapses(self.E, self.I, on_pre='v_post += J', delay=self.delay, name='S_E_I')
-        self.S_E_I.connect(condition='i != j', p=0.1)
-        #connect_synases_fixed_indegree(self.S_E_I, int(0.1*self.N_E), self.N_I, self.N_E)
+        self.S_E_I.connect(condition='i != j', p=eps)
         
         # Dynamic synapses
         self.S_E_E = Synapses(self.E, self.E, model='''
@@ -116,24 +119,17 @@ class StructuralPlasticityModel:
         '''
         ,on_pre='v_post += c*J', delay=self.delay, name='S_E_E')
         self.S_E_E.connect()
-        
-        self.C_E = []
-        self.C_E_t = []
+
+        self.E_con = []
+        self.E_con_t = []
         self.spike_mon_I = SpikeMonitor(self.I, name='spikemonitor')
         self.spike_mon_E = SpikeMonitor(self.E, name='spikemonitor_1')
 
-        self.network.add(self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E, self.spike_mon_E, self.spike_mon_I)#, self.M2)
+        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E, self.spike_mon_E, self.spike_mon_I)#, self.M2)
 
         if enable_plasticity:
             self.structural_plasticity = network_operation(dt=self.delta_T_s)(self.rewiring)
             self.network.add(self.structural_plasticity)
-            
-        if processes is None:
-            self.processes = 1#self._test_processes()
-        else:
-            self.processes = processes
-        # debug
-        self.rewiring_time = 0
 
     def run(self, duration):
         self.network.run(duration, namespace=self.namespace, report='text', report_period=20*second)
@@ -255,9 +251,9 @@ class StructuralPlasticityModel:
         tmp_time = time.time()
         # log mean connnectivity
         self.S_E_E.c.variable.set_value(connections.flatten())
-        self.C_E_t.append(t/ms)
+        self.E_con_t.append(t/ms)
 
-        self.C_E.append(xp.mean(self.S_E_E.c.variable.get_value()))
+        self.E_con.append(xp.mean(self.S_E_E.c.variable.get_value()))
         logger.debug("RecordTime: " + str(time.time() - tmp_time))
         
         self.rewiring_time += time.time() - start_time
@@ -273,7 +269,7 @@ class StructuralPlasticityModel:
         plt.plot(self.spike_mon_I.t/ms, self.spike_mon_I.i, ',k')
         plt.xlabel('Time (ms)')
         plt.ylabel('Neuron index')
-        plt.title('Inhibitory neurons')
+        plt.title('Inhibitory neuorrect way to dynamically update plots in ...rons')
         plt.show()
 #
 #        plt.plot(self.M2.t/ms, self.M2.V[0]/mV)
@@ -281,10 +277,16 @@ class StructuralPlasticityModel:
 #        plt.ylabel('Membrane potential (mV)')
 #        plt.show()
 
-        plt.plot(self.C_E_t, self.C_E)
+#        plt.plot(self.E_con_t, self.E_con)
+#        plt.xlabel('Time (ms)')
+#        plt.ylabel('Average synaptic weight')
+#        plt.show()
+
+        plt.plot(self.TestMon.t/ms, self.TestMon.c[0])
         plt.xlabel('Time (ms)')
         plt.ylabel('Average synaptic weight')
         plt.show()
+
         
     # Tests how many threads to use in deleting step for network size
     def _test_processes(self, num_trials=1, max_thread=12):
