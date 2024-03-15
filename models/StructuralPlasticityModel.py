@@ -21,14 +21,15 @@ class StructuralPlasticityModel:
         Returns:
         None
         """
+        self.standalone = params.get('standalone', False)
         
         start_scope()
 
         self.network = Network()
 
         # Neurons
-        self.N_E = 4*params.get('order', 25)
-        self.N_I = 1*params.get('order', 25)
+        self.N_E = 4*params.get('order', 2500)
+        self.N_I = 1*params.get('order', 2500)
         self.V_th = params.get('V_th', 20*mV)
         self.V_res = params.get('V_res', 10*mV)
         self.t_ref = params.get('t_ref', 2*ms)
@@ -57,18 +58,18 @@ class StructuralPlasticityModel:
 
         # Equations for neuron dynamics 
         inh_eqs = '''
-        dv/dt = (- v / tau_m) + (RI/ms) : volt (unless refractory)
-        RI = poisson(nu_ext) * J: volt (constant over dt)
+        dv/dt = (- v / tau_m) : volt (unless refractory)
         nu_ext : 1
         '''
+        #RI = poisson(nu_ext) * J: volt (constant over dt)
         exc_eqs = '''
-        dv/dt = (- v / tau_m) + (RI/ms) : volt (unless refractory)
-        RI = poisson(nu_ext) * J: volt (constant over dt)
+        dv/dt = (- v / tau_m) : volt (unless refractory)
         nu_ext : 1
         dphi/dt = - phi / tau_ca : Hz
         dd/dt = (nu - phi)/beta_d : 1
         da/dt = (nu - phi)/beta_a : 1
         '''
+        #RI = poisson(nu_ext) * J: volt (constant over dt)
 
         # Make class member variables accessable in brian
         self.namespace = {
@@ -83,26 +84,40 @@ class StructuralPlasticityModel:
             'v_th': self.V_th, 
             'v_res': self.V_res, 
             't_ref': self.t_ref, 
-            'delay': self.delay
+            'delay': self.delay,
+            'N_I': self.N_I,
+            'N_E': self.N_E,
+            'CI': self.CI,
+            'CE': self.CE,
         }
 
-        
         # Create Neurons
-        self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, name='I')
-        self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=1*Hz', refractory=self.t_ref, name='E')
+        self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, method='euler', name='I')
+        self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=1*Hz', refractory=self.t_ref, method='euler', name='E')
         
-        self.E.nu_ext = self.nu_ext / kHz
-        self.I.nu_ext = self.nu_ext / kHz
+        #self.E.a = '1'
+        #self.E.d = '1'
+
+        self.E.nu_ext = self.nu_ext/ kHz
+        self.I.nu_ext = self.nu_ext/ kHz
         
+        self.P_E_1 = PoissonInput(self.E[:1000], rate=self.nu_ext/15, target_var='v', N=15, weight=self.J)
+        self.P_E_2 = PoissonInput(self.E[1000:], rate=self.nu_ext/15, target_var='v', N=15, weight=self.J)
+        self.P_I = PoissonInput(self.I, rate=self.nu_ext/15, target_var='v', N=15, weight=self.J )
+
+        self.network.add(self.P_E_1, self.P_E_2, self.P_I)
         # Static Synapses
         self.S_I_I = Synapses(self.I, self.I, on_pre='v_post += J_I', delay=self.delay, name='S_I_I')
-        self.S_I_I.connect(condition='i != j', p=self.eps)
+        #self.S_I_I.connect(condition='i != j', p=self.eps)
+        self.S_I_I.connect(i='k for k in sample(N_I, size=CI)', namespace=self.namespace)
         
         self.S_I_E = Synapses(self.I, self.E, on_pre='v_post += J_I', delay=self.delay, name='S_I_E')
-        self.S_I_E.connect(condition='i != j', p=self.eps)
+        #self.S_I_E.connect(condition='i != j', p=self.eps)
+        self.S_I_E.connect(i='k for k in sample(N_I, size=CI)', namespace=self.namespace)
         
         self.S_E_I = Synapses(self.E, self.I, on_pre='v_post += J', delay=self.delay, name='S_E_I')
-        self.S_E_I.connect(condition='i != j', p=self.eps)
+        #self.S_E_I.connect(condition='i != j', p=self.eps)
+        self.S_E_I.connect(i='k for k in sample(N_E, size=CE)', namespace=self.namespace)
         
         # Dynamic synapses
         self.S_E_E = Synapses(self.E, self.E, model='''
@@ -114,24 +129,78 @@ class StructuralPlasticityModel:
         # Set up recording
         self.E_con = []
         self.E_con_t = []
-        self.spike_mon_I = SpikeMonitor(self.I, name='spikemonitor')
-        self.spike_mon_E = SpikeMonitor(self.E, name='spikemonitor_1')
+        #self.spike_mon_I = SpikeMonitor(self.I, name='spikemonitor')
+        #self.spike_mon_E = SpikeMonitor(self.E, name='spikemonitor_1')
 
-        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E, self.spike_mon_E, self.spike_mon_I)
+        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E)#, self.spike_mon_E, self.spike_mon_I)
         
-        # Set up structural plasticity
-        if self.enable_plasticity:
-            self.sp_manager = StructuralPlasticityManager(
-                self.S_E_E, 
-                self.S_E_E.c.variable.get_value(),
-                self.E.a.variable.get_value(), 
-                self.E.d.variable.get_value()
-            )
-            self.structural_plasticity = network_operation(dt=self.delta_T_s)(self.sp_manager.rewiring)
-            self.network.add(self.structural_plasticity)
-            
 
-    def run(self, duration):
+        if(self.standalone):
+            print("standalone")
+            self.sp_standalone()
+
+            current_dir = os.path.dirname(os.path.dirname(__file__))
+
+            @implementation('cpp', '', 
+            sources=[os.path.join(current_dir, 'cpp', 'rewire.cpp')],
+            headers=['"rewire.h"'],
+            include_dirs=[os.path.join(current_dir, 'cpp')]
+            )
+            @check_units(start_g1=1, end_g1=1, start_g2=1, end_g2=1, result=1)
+            def record_mean(start_g1, end_g1, start_g2, end_g2):
+                return xp.mean(self.S_E_E.c[start_g1:end_g1, start_g2:end_g2])
+            
+            self.namespace['record_mean'] = record_mean
+            
+            self.ConMean = NeuronGroup(1, '''
+            c_1_1 = record_mean(0, 1000, 0, 100) : 1 (constant over dt)
+            c_1_2 = record_mean(0, 1000, 1000, 10000) : 1 (constant over dt)
+            c_2_1 = record_mean(1000, 10000, 0, 1000) : 1 (constant over dt)
+            c_2_2 = record_mean(1000, 10000, 1000, 10000) : 1 (constant over dt)
+            ''', 
+            dt=10*second, name='ConMean')
+            
+            self.network.add(self.ConMean)
+        else:
+            # Set up structural plasticity
+            if self.enable_plasticity:
+                self.sp_manager = StructuralPlasticityManager(
+                    self.S_E_E, 
+                    self.S_E_E.c.variable.get_value(),
+                    self.E.a.variable.get_value(), 
+                    self.E.d.variable.get_value()
+                )
+                self.structural_plasticity = network_operation(dt=self.delta_T_s)(self.sp_manager.rewiring)
+                self.network.add(self.structural_plasticity)
+
+
+            
+    def sp_standalone(self):
+        '''
+        Standalone implementation of the structural plasticity mechanism
+        '''
+
+        current_dir = os.path.dirname(os.path.dirname(__file__))
+
+        @implementation('cpp', '', 
+        sources=[os.path.join(current_dir, 'cpp', 'rewire.cpp')],
+        headers=['"rewire.h"'],
+        include_dirs=[os.path.join(current_dir, 'cpp')],
+        )
+        @check_units(result=1)
+        def rewire():
+            print('rewire', file=sys.stderr)
+
+        self.namespace['rewire'] = rewire 
+
+        self.Test = NeuronGroup(1, '''
+        c = rewire() : 1 (constant over dt)
+        ''', dt=self.delta_T_s, name='Test')
+        
+        self.network.add(self.Test)
+
+
+    def run(self, duration, **kwargs):
         """
         Runs the simulation for a given duration.
 
@@ -142,7 +211,7 @@ class StructuralPlasticityModel:
         None
         """
 
-        self.network.run(duration, namespace=self.namespace, report='text', report_period=20*second)
+        self.network.run(duration, namespace=self.namespace, report='text', report_period=20*second, **kwargs)
 
     def plot(self):
         """
@@ -152,17 +221,17 @@ class StructuralPlasticityModel:
         Returns:
         None
         """
-        plt.plot(self.spike_mon_E.t/ms, self.spike_mon_E.i, ',k')
-        plt.xlabel('Time (ms)')
-        plt.ylabel('Neuron index')
-        plt.title('Excitatory neurons')
-        plt.show()
-
-        plt.plot(self.spike_mon_I.t/ms, self.spike_mon_I.i, ',k')
-        plt.xlabel('Time (ms)')
-        plt.ylabel('Neuron index')
-        plt.title('Inhibitory neuron')
-        plt.show()
+#        plt.plot(self.spike_mon_E.t/ms, self.spike_mon_E.i, ',k')
+#        plt.xlabel('Time (ms)')
+#        plt.ylabel('Neuron index')
+#        plt.title('Excitatory neurons')
+#        plt.show()
+#
+#        plt.plot(self.spike_mon_I.t/ms, self.spike_mon_I.i, ',k')
+#        plt.xlabel('Time (ms)')
+#        plt.ylabel('Neuron index')
+#        plt.title('Inhibitory neuron')
+#        plt.show()
 
         if(self.enable_plasticity):
             plt.plot(self.sp_manager.mean_con_t, self.sp_manager.mean_con)
