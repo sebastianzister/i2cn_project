@@ -4,82 +4,74 @@ import matplotlib.pyplot as plt
 from multiprocessing import Pool
 import os
  
-# TODO: make backend configurable cpu(numpy)/gpu(cupy) 
-backend = 'numpy'# if np.get_device() else 'numpy'
+# cupy support currently not available
+backend = 'numpy'
 xp = __import__(backend)
 
 import logging
 
 class StructuralPlasticityModel:
-    def __init__(self,
-                dt = 0.1*ms,
-                order = 25,
-                V_th = 20*mV,
-                V_res = 10*mV,
-                t_ref = 2*ms,
-                tau_m = 20*ms,
-                nu_ext = 15*kHz,
-                J = 0.1*mV,
-                g = 8,
-                eta = 1.5,
-                eps = 0.1,
-                delay = 1*ms,
-                tau_ca = 1*second,
-                delta_T_s = 100*ms,
-                nu = 8*Hz,
-                beta_d = 2,
-                beta_a = 2,
-                enable_plasticity = True,
-                allow_autapses = False,
-                processes = None):
+    def __init__(self, params):
+        """
+        Initializes the structural plasticity model.
 
+        Parameters:
+        params (dict): A dictionary containing the parameters for the model.
+
+        Returns:
+        None
+        """
+        self.standalone = params.get('standalone', False)
+        
         start_scope()
 
         self.network = Network()
 
         # Neurons
-        self.N_E = 4*order
-        self.N_I = 1*order
-        self.V_th = V_th
-        self.V_res = V_res
-        self.t_ref = t_ref
-        self.tau_m = tau_m
-        
-        self.CE    = int(eps*self.N_E)         # number of incoming excitatory synapses per inhibitory neuron
-        self.CI    = int(eps*self.N_I)         # number of incoming inhibitory synapses per neuron  
-
-        # Background Input
-        nu_th = V_th/(J*self.CE*tau_m)
-        nu_ex = eta*nu_th
-        self.nu_ext = nu_ex*1000#*self.CE
+        self.N_E = 4*params.get('order', 2500)
+        self.N_I = 1*params.get('order', 2500)
+        self.V_th = params.get('V_th', 20*mV)
+        self.V_res = params.get('V_res', 10*mV)
+        self.t_ref = params.get('t_ref', 2*ms)
+        self.tau_m = params.get('tau_m', 20*ms)
+        self.eps = params.get('eps', 0.1)
+        self.eta = params.get('eta', 1.5)
+        self.CE    = int(self.eps*self.N_E)         # number of incoming excitatory synapses per inhibitory neuron
+        self.CI    = int(self.eps*self.N_I)         # number of incoming inhibitory synapses per excitatory neuron  
 
         # Synapses
-        self.J = J# * self.tau_m/ms
-        self.g = g
-        self.J_I = - J * g
-        self.delay = delay
+        self.J = params.get('J', 0.1*mV)
+        self.g = params.get('g', 8)
+        self.J_I = - self.J * self.g
+        self.delay = params.get('delay', 1*ms)
+
+        # Background Input
+        self.nu_ext = params.get('nu_ext', 15*kHz)
 
         # Plasticity
-        self.tau_ca = tau_ca
-        self.delta_T_s = delta_T_s
-        self.nu = nu
-        self.beta_d = beta_d
-        self.beta_a = beta_a
+        self.enable_plasticity = params.get('enable_plasticity', True)
+        self.tau_ca = params.get('tau_ca', 1*second)
+        self.delta_T_s = params.get('delta_T_s', 100*ms)
+        self.nu = params.get('nu', 8*Hz)
+        self.beta_d = params.get('beta_d', 2)
+        self.beta_a = params.get('beta_a', 2)
 
+        # Equations for neuron dynamics 
         inh_eqs = '''
-        dv/dt = (- v / tau_m) + (RI/ms) : volt (unless refractory)
-        RI = poisson(nu_ext) * J: volt (constant over dt)
+        dv/dt = (- v / tau_m) : volt (unless refractory)
         nu_ext : 1
         '''
+        #RI = poisson(nu_ext) * J: volt (constant over dt)
         exc_eqs = '''
-        dv/dt = (- v / tau_m) + (RI/ms) : volt (unless refractory)
-        RI = poisson(nu_ext) * J: volt (constant over dt)
+        dv/dt = (- v / tau_m) : volt (unless refractory)
         nu_ext : 1
         dphi/dt = - phi / tau_ca : Hz
         dd/dt = (nu - phi)/beta_d : 1
         da/dt = (nu - phi)/beta_a : 1
         '''
+        #RI = poisson(nu_ext) * J: volt (constant over dt)
 
+        # Make class member variables accessable in brian
         self.namespace = {
             'tau_m': self.tau_m, 
             'tau_ca': self.tau_ca, 
@@ -92,26 +84,40 @@ class StructuralPlasticityModel:
             'v_th': self.V_th, 
             'v_res': self.V_res, 
             't_ref': self.t_ref, 
-            'delay': self.delay
+            'delay': self.delay,
+            'N_I': self.N_I,
+            'N_E': self.N_E,
+            'CI': self.CI,
+            'CE': self.CE,
         }
 
-        
         # Create Neurons
-        self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, name='I')
-        self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=1*Hz', refractory=self.t_ref, name='E')
+        self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, method='euler', name='I')
+        self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=(1/tau_ca)', refractory=self.t_ref, method='euler', name='E')
         
-        self.E.nu_ext = nu_ext / kHz
-        self.I.nu_ext = nu_ext / kHz
+        #self.E.a = '1'
+        #self.E.d = '1'
+
+        self.E.nu_ext = self.nu_ext/ kHz
+        self.I.nu_ext = self.nu_ext/ kHz
         
+        self.P_E_1 = PoissonInput(self.E[:1000], rate=self.nu_ext/15, target_var='v', N=15, weight=self.J)
+        self.P_E_2 = PoissonInput(self.E[1000:], rate=self.nu_ext/15, target_var='v', N=15, weight=self.J)
+        self.P_I = PoissonInput(self.I, rate=self.nu_ext/15, target_var='v', N=15, weight=self.J )
+
+        self.network.add(self.P_E_1, self.P_E_2, self.P_I)
         # Static Synapses
         self.S_I_I = Synapses(self.I, self.I, on_pre='v_post += J_I', delay=self.delay, name='S_I_I')
-        self.S_I_I.connect(condition='i != j', p=eps)
+        #self.S_I_I.connect(condition='i != j', p=self.eps)
+        self.S_I_I.connect(i='k for k in sample(N_I, size=CI)', namespace=self.namespace)
         
         self.S_I_E = Synapses(self.I, self.E, on_pre='v_post += J_I', delay=self.delay, name='S_I_E')
-        self.S_I_E.connect(condition='i != j', p=eps)
+        #self.S_I_E.connect(condition='i != j', p=self.eps)
+        self.S_I_E.connect(i='k for k in sample(N_I, size=CI)', namespace=self.namespace)
         
         self.S_E_I = Synapses(self.E, self.I, on_pre='v_post += J', delay=self.delay, name='S_E_I')
-        self.S_E_I.connect(condition='i != j', p=eps)
+        #self.S_E_I.connect(condition='i != j', p=self.eps)
+        self.S_E_I.connect(i='k for k in sample(N_E, size=CE)', namespace=self.namespace)
         
         # Dynamic synapses
         self.S_E_E = Synapses(self.E, self.E, model='''
@@ -120,53 +126,205 @@ class StructuralPlasticityModel:
         ,on_pre='v_post += c*J', delay=self.delay, name='S_E_E')
         self.S_E_E.connect()
 
+        # Set up recording
         self.E_con = []
         self.E_con_t = []
-        self.spike_mon_I = SpikeMonitor(self.I, name='spikemonitor')
-        self.spike_mon_E = SpikeMonitor(self.E, name='spikemonitor_1')
+        #self.spike_mon_I = SpikeMonitor(self.I, name='spikemonitor')
+        #self.spike_mon_E = SpikeMonitor(self.E, name='spikemonitor_1')
 
-        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E, self.spike_mon_E, self.spike_mon_I)#, self.M2)
+        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E)#, self.spike_mon_E, self.spike_mon_I)
+        
 
-        if enable_plasticity:
-            self.structural_plasticity = network_operation(dt=self.delta_T_s)(self.rewiring)
-            self.network.add(self.structural_plasticity)
+        if(self.standalone):
+            print("standalone")
+            self.sp_standalone()
 
-    def run(self, duration):
-        self.network.run(duration, namespace=self.namespace, report='text', report_period=20*second)
-    
+            current_dir = os.path.dirname(os.path.dirname(__file__))
+
+            @implementation('cpp', '', 
+            sources=[os.path.join(current_dir, 'cpp', 'rewire.cpp')],
+            headers=['"rewire.h"'],
+            include_dirs=[os.path.join(current_dir, 'cpp')]
+            )
+            @check_units(start_g1=1, end_g1=1, start_g2=1, end_g2=1, result=1)
+            def record_mean(start_g1, end_g1, start_g2, end_g2):
+                return xp.mean(self.S_E_E.c[start_g1:end_g1, start_g2:end_g2])
+            
+            self.namespace['record_mean'] = record_mean
+            
+            self.ConMean = NeuronGroup(1, '''
+            c_1_1 = record_mean(0, 1000, 0, 100) : 1 (constant over dt)
+            c_1_2 = record_mean(0, 1000, 1000, 10000) : 1 (constant over dt)
+            c_2_1 = record_mean(1000, 10000, 0, 1000) : 1 (constant over dt)
+            c_2_2 = record_mean(1000, 10000, 1000, 10000) : 1 (constant over dt)
+            ''', 
+            dt=10*second, name='ConMean')
+            
+            self.network.add(self.ConMean)
+        else:
+            # Set up structural plasticity
+            if self.enable_plasticity:
+                self.sp_manager = StructuralPlasticityManager(
+                    self.S_E_E, 
+                    self.S_E_E.c.variable.get_value(),
+                    self.E.a.variable.get_value(), 
+                    self.E.d.variable.get_value()
+                )
+                self.structural_plasticity = network_operation(dt=self.delta_T_s)(self.sp_manager.rewiring)
+                self.network.add(self.structural_plasticity)
+
+
+            
+    def sp_standalone(self):
+        '''
+        Standalone implementation of the structural plasticity mechanism
+        '''
+
+        current_dir = os.path.dirname(os.path.dirname(__file__))
+
+        @implementation('cpp', '', 
+        sources=[os.path.join(current_dir, 'cpp', 'rewire.cpp')],
+        headers=['"rewire.h"'],
+        include_dirs=[os.path.join(current_dir, 'cpp')],
+        )
+        @check_units(result=1)
+        def rewire():
+            print('rewire', file=sys.stderr)
+
+        self.namespace['rewire'] = rewire 
+
+        self.Test = NeuronGroup(1, '''
+        c = rewire() : 1 (constant over dt)
+        ''', dt=self.delta_T_s, name='Test')
+        
+        self.network.add(self.Test)
+
+
+    def run(self, duration, **kwargs):
+        """
+        Runs the simulation for a given duration.
+
+        Parameters:
+        duration (float): The duration of the simulation.
+
+        Returns:
+        None
+        """
+
+        self.network.run(duration, namespace=self.namespace, report='text', report_period=20*second, **kwargs)
+
+    def plot(self):
+        """
+        Plots the spike trains of the excitatory and inhibitory neurons.
+        If plasticity is enabled, it also plots the average synaptic weight over time.
+
+        Returns:
+        None
+        """
+#        plt.plot(self.spike_mon_E.t/ms, self.spike_mon_E.i, ',k')
+#        plt.xlabel('Time (ms)')
+#        plt.ylabel('Neuron index')
+#        plt.title('Excitatory neurons')
+#        plt.show()
+#
+#        plt.plot(self.spike_mon_I.t/ms, self.spike_mon_I.i, ',k')
+#        plt.xlabel('Time (ms)')
+#        plt.ylabel('Neuron index')
+#        plt.title('Inhibitory neuron')
+#        plt.show()
+
+        if(self.enable_plasticity):
+            plt.plot(self.sp_manager.mean_con_t, self.sp_manager.mean_con)
+            plt.xlabel('Time (ms)')
+            plt.ylabel('Average synaptic weight')
+            plt.show()
+
+class StructuralPlasticityManager:
+    """
+    Class for performing the structural plasticity mechanism of the network.
+    """
+
+    def __init__(self, synapses, connectivity, a, d):
+        self.synapses = synapses
+        self.connectivity = connectivity
+        self.a = a
+        self.d = d
+        self.neuron_count = self.a.shape[0]
+        self.mean_con = []
+        self.mean_con_t = []
+
     def _delete_connections(self, num, connections):
+        """
+        Deletes num random connections for a neuron.
+
+        Parameters:
+        num (int): The number of elements to be deleted.
+        connections (ndarray): The current connections for one neuron.
+
+        Returns:
+        None
+        """
+        
         if(num > 0):
             gen = np.random.default_rng()
-            x =  np.arange(0, self.N_E, dtype=int).repeat(connections)   
+            x =  np.arange(0, self.neuron_count, dtype=int).repeat(connections)   
             gen.shuffle(x)
             idx, cnt = np.unique(x[:min(num, len(x))], return_counts=True)
             connections[idx] -= cnt
 
     def delete_connections_pre(self, connection_matrix, delta_a):
-        #with Pool(self.processes) as pool:
-	    for num, connections in zip(delta_a, connection_matrix):
+        """
+        Deletes random outgoing connections based on the number of axonal elements to be deleted for each neuron.
+
+        Parameters:
+        connection_matrix (ndarray): The current connectivity matrix.
+        delta_d (ndarray): The number of dendritic elements to be deleted for each neuron.
+
+        Returns:
+        None
+        """
+
+        for num, connections in zip(delta_a, connection_matrix):
 	        self._delete_connections(num, connections)
-	    #        pool.apply_async(self._delete_connections, (num, connections, ))
         
     def delete_connections_post(self, connection_matrix, delta_d):
-	    for num, connections in zip(delta_d, connection_matrix.T):
+        """
+        Deletes random incoming connections based on the number of dendritic elements to be deleted for each neuron.
+
+        Parameters:
+        connection_matrix (ndarray): The current connectivity matrix.
+        delta_d (ndarray): The number of dendritic elements to be deleted for each neuron.
+
+        Returns:
+        None
+        """
+
+        for num, connections in zip(delta_d, connection_matrix.T):
 	        self._delete_connections(num, connections)
-#        with Pool(self.processes) as pool:
-#	        for num, connections in zip(delta_d, connection_matrix.T):
-#	            pool.apply_async(self._delete_connections, (num, connections, ))
         
     def select_connections(self, delta_a, delta_d, skip_self_connections=True):
+        """
+        Selects new connections between free elements randomly.
+
+        Parameters:
+        delta_a (ndarray): The number of free axonal elements
+        delta_d (ndarray): The number of free dendritic elements
+        skip_self_connections (bool): Whether autapses are allowed.
+
+        Returns:
+        ndarray: The chosen connections.
+        """
+
         # Calculate number of new connections
         a_free = xp.floor(delta_a).clip(0).astype(int)
         d_free = xp.floor(delta_d).clip(0).astype(int)
         a_tot = xp.sum(a_free)
         d_tot = xp.sum(d_free)
         num_connections = min(a_tot, d_tot)
-        #print("Creating {} new connections".format(num_connections))
 
         # List all synaptic elements
-        a_free = xp.arange(0, self.N_E, dtype=int).repeat(a_free.tolist())
-        d_free = xp.arange(0, self.N_E, dtype=int).repeat(d_free.tolist())
+        a_free = xp.arange(0, self.neuron_count, dtype=int).repeat(a_free.tolist())
+        d_free = xp.arange(0, self.neuron_count, dtype=int).repeat(d_free.tolist())
         
         # Shuffle longer list
         if(d_tot <= a_tot):
@@ -181,145 +339,66 @@ class StructuralPlasticityModel:
         # Make array of tuples of chosen connections
         chosen_connections = xp.column_stack((a_free, d_free))
 
-        if backend == 'numpy':
-            # count duplicates
-            chosen_connections, counts = np.unique(chosen_connections, axis=0, return_counts=True)
+        # Count duplicates
+        chosen_connections, counts = np.unique(chosen_connections, axis=0, return_counts=True)
 
-            # If we want to skip self connections, remove them
-            if skip_self_connections and len(chosen_connections) > 0:
-                mask = chosen_connections[:,0] != chosen_connections[:,1]
-                chosen_connections = chosen_connections[mask]
-                counts = counts[mask]
-                
-        # TODO: For cupy or in general => interpret indicies as 16bit, and concatenate to 32bit int, for 1D array
-        #       Run unique and cast back
-        elif backend == 'cupy':
-            if skip_self_connections and len(chosen_connections) > 0:
-                mask = chosen_connections[:,0] != chosen_connections[:,1]
-                chosen_connections = chosen_connections[mask]
-            counts = xp.ones(len(chosen_connections), dtype=int)
+        # If we want to skip self connections, remove them
+        if skip_self_connections and len(chosen_connections) > 0:
+            mask = chosen_connections[:,0] != chosen_connections[:,1]
+            chosen_connections = chosen_connections[mask]
+            counts = counts[mask]
             
         return chosen_connections, counts
 
     def create_connections(self, connections, delta_a, delta_d):
+        """
+        Creates new random connections between free elements.
+
+        Parameters:
+        connections (ndarray): The current connectivity matrix.
+        delta_a (ndarray): The number of free axonal elements.
+        delta_d (ndarray): The number of free dendritic elements.
+
+        Returns:
+        ndarray: The updated connectivity matrix.
+        """
         
         chosen_connections, counts = self.select_connections(delta_a, delta_d)
-        # move to cpu 
-        if backend == 'cupy':
-            chosen_connections = xp.asnumpy(chosen_connections)
-            counts = xp.asnumpy(counts)
 
         # Increase weight of chosen connections
         connections[chosen_connections[:,0], chosen_connections[:,1]] += counts
         
         return connections
-    
+
     def rewiring(self, t):
-        logger = logging.getLogger('rewiring')
-        logger.debug("")
-        logger.debug('Rewiring at t = ' + str(t/ms))
-
-        tmp_time = time.time()
-        start_time = time.time()
-        # Get connectivity matrix
-        connections = xp.array(self.S_E_E.c.variable.get_value()).astype(int).reshape(self.N_E, self.N_E)
-        logger.debug("GetTime: " + str(time.time() - start_time))
-
-
-        tmp_time = time.time()
-        # Get number of free/deleted elements
-        # TODO: Check if we sum over the right axes for dendritic/axonal elements
-        delta_a = (xp.floor(xp.array(self.E.a[:])) - xp.sum(connections, axis=1)).astype(int)
-        delta_d = (xp.floor(xp.array(self.E.d[:])) - xp.sum(connections, axis=0)).astype(int)
-        logger.debug("DeltaTime: " + str(time.time() - tmp_time))
-
-        tmp_time = time.time()
-        # delete axonal elements
-        self.delete_connections_pre(connections, -delta_a)
-        logger.debug("PreTime: " + str(time.time() - tmp_time))
-
-        tmp_time = time.time()
-        # delete dendritic elements
-        self.delete_connections_post(connections, -delta_d)
-        logger.debug("PostTime: " + str(time.time() - tmp_time))
-
-        tmp_time = time.time()
-        # create new connections between free elements
-        connections = self.create_connections(connections, delta_a, delta_d)
-        logger.debug("CreateTime: " + str(time.time() - tmp_time))
-
-        tmp_time = time.time()
-        # log mean connnectivity
-        self.S_E_E.c.variable.set_value(connections.flatten())
-        self.E_con_t.append(t/ms)
-
-        self.E_con.append(xp.mean(self.S_E_E.c.variable.get_value()))
-        logger.debug("RecordTime: " + str(time.time() - tmp_time))
-        
-        self.rewiring_time += time.time() - start_time
-        logger.debug("TotalTime: " + str(time.time() - start_time))
-
-    def plot(self):
-        plt.plot(self.spike_mon_E.t/ms, self.spike_mon_E.i, ',k')
-        plt.xlabel('Time (ms)')
-        plt.ylabel('Neuron index')
-        plt.title('Excitatory neurons')
-        plt.show()
-
-        plt.plot(self.spike_mon_I.t/ms, self.spike_mon_I.i, ',k')
-        plt.xlabel('Time (ms)')
-        plt.ylabel('Neuron index')
-        plt.title('Inhibitory neuorrect way to dynamically update plots in ...rons')
-        plt.show()
-#
-#        plt.plot(self.M2.t/ms, self.M2.V[0]/mV)
-#        plt.xlabel('Time (ms)')
-#        plt.ylabel('Membrane potential (mV)')
-#        plt.show()
-
-#        plt.plot(self.E_con_t, self.E_con)
-#        plt.xlabel('Time (ms)')
-#        plt.ylabel('Average synaptic weight')
-#        plt.show()
-
-        plt.plot(self.TestMon.t/ms, self.TestMon.c[0])
-        plt.xlabel('Time (ms)')
-        plt.ylabel('Average synaptic weight')
-        plt.show()
-
-        
-    # Tests how many threads to use in deleting step for network size
-    def _test_processes(self, num_trials=1, max_thread=12):
-        print("Starting multiprocessing test")
-        print("Specify the number of processes when creating the network to skip this")
-        num_threads = range(1, max_thread+1)
-        times = []
-        for i in range(0, num_trials):
-            print("Trial: ", i)
-            c = np.random.randint(0, 3, size=(self.N_E, self.N_E))
-            a = np.random.randint(0, c.sum(axis=1), size=(self.N_E))
-        
-            for pool_size in num_threads:
-                c_bak = c.copy()
-                tmp_time = time.time()
-                pool = Pool(pool_size)
-            
-                for num, row in zip(a, c_bak):
-                    pool.apply_async(self._delete_connections, (num, row, ))
-                
-                pool.close()
-                pool.join()
-                times.append(time.time() - tmp_time)
-                #print("Time with ", pool_size, " Threads: ", times[-1])
-                
-            
-        mean_times = np.array(times).reshape((num_trials, -1)).sum(axis=0)/num_trials
-        best = argmin(mean_times)
-        plt.plot(num_threads, mean_times)
-        plt.show()
-        print("Best results with ", best + 1, " processes")
-        return best + 1
-        
-
-
+        """
+        Performs the rewiring process on the connectivity matrix.
     
+        Parameters:
+        t (float): The current time in the simulation.
+    
+        Returns:
+        None
+        """
+
+        # Reshape connectivity matrix
+        connections = self.connectivity.reshape(self.neuron_count, self.neuron_count).astype(int)
+
+        # Get number of free/deleted elements
+        delta_a = (xp.floor(self.a) - xp.sum(connections, axis=1)).astype(int)
+        delta_d = (xp.floor(self.d) - xp.sum(connections, axis=0)).astype(int)
+
+        # Remove connections for deleted axonal elements
+        self.delete_connections_pre(connections, -delta_a)
+
+        # Remove connections for deleted dentritic elements
+        self.delete_connections_post(connections, -delta_d)
+
+        # Create new connections between free elements
+        connections = self.create_connections(connections, delta_a, delta_d)
+        
+        self.connectivity[:] = connections.flatten()
+
+        # Log mean connnectivity
+        self.mean_con_t.append(t/ms)
+        self.mean_con.append(xp.mean(self.connectivity))
