@@ -50,7 +50,7 @@ void _delete_connections_rowwise(int num, std::vector<double>& connections, int 
     }
 }
 
-#define DEBUG
+//#define DEBUG
 void _delete_connections_columnwise(int num, std::vector<double>& connections, int col_start_index, int num_rows, int num_cols, int num_connections) {
     //int num_delete = min(num, num_connections);
     //if(num_delete > 0) {

@@ -93,7 +93,7 @@ class StructuralPlasticityModel:
 
         # Create Neurons
         self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, method='euler', name='I')
-        self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=1*Hz', refractory=self.t_ref, method='euler', name='E')
+        self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=(1/tau_ca)', refractory=self.t_ref, method='euler', name='E')
         
         #self.E.a = '1'
         #self.E.d = '1'
