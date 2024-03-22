@@ -64,49 +64,6 @@ void _delete_connections_columnwise(int num, std::vector<double>& connections, i
 
         std::vector<int> x;
 
-        
-//        #ifdef DEBUG
-//        if(col_start_index==0){
-//            end = std::chrono::steady_clock::now();
-//            std::cout << "\t\tDelete_post_iter_init = " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "[µs]" << std::endl;
-//            start=end;
-//        }
-//        #endif
-//        std::vector<int> indices(num_connections);
-//        std::iota(indices.begin(), indices.end(), 0);
-//       1  #ifdef DEBUG
-//        if(col_start_index==0){
-//            end = std::chrono::steady_clock::now();
-//            std::cout << "\t\tDelete_post_iter_init = " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "[µs]" << std::endl;
-//            start=end;
-//        }
-//        #endif
-//        int running_sum = 0;
-//        int delete_index = 0;
-//        int deleted_con = indices[delete_index];
-//        for (int i = 0; i < num_rows; ++i) {
-//            int index = col_start_index + i * num_rows;
-//            running_sum+=connections[index];
-//            while(running_sum >= deleted_con){
-//                connections[index] -= 1;
-//                running_sum -= 1;
-//                delete_index += 1;
-//                if(delete_index >= num_delete) {
-//			        #ifdef DEBUG
-//			        if(col_start_index==0){
-//			            end = std::chrono::steady_clock::now();
-//			            std::cout << "\t\tDelete_post_iter_ind_shuffle= " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "[µs]" << std::endl;
-//			            start=end;
-//			        }
-//			        #endif
-//                    return;
-//                }
-//                deleted_con = indices[delete_index] - delete_index;
-//            }
-//        }
-        
-
-
         #ifdef DEBUG
         if(col_start_index==0){
             end = std::chrono::steady_clock::now();
@@ -186,40 +143,23 @@ void create_connections(std::vector<double>& connections, std::vector<int>& delt
 
     std::vector<int> free_a;
     std::vector<int> free_d;
-    
-    //cout << "Creating connections" << endl; 
-
-    //int temp = 0;
 
     for (int i = 0; i < delta_a.size(); ++i) {
-        //if(delta_a[i] > 0){
-        //    temp += delta_a[i];
-        //}
         for (int j = 0; j < delta_a[i]; ++j) {
             free_a.push_back(i);
         }
     }
     
-    //cout << "Delta_a+ total: " << temp << endl;
-    //temp = 0;
-
     for (int i = 0; i < delta_d.size(); ++i) {
-        //if(delta_d[i] > 0){
-        //    temp += delta_d[i];
-        //}
         for (int j = 0; j < delta_d[i]; ++j) {
             free_d.push_back(i);
         }
     }
     
-    //cout << "Delta_d+ total: " << temp << endl;
-    
     std::shuffle(free_d.begin(), free_d.end(), g);
     std::shuffle(free_a.begin(), free_a.end(), g);
     
     int num_connections = std::min(free_a.size(), free_d.size());
-    
-    //cout << "creating " << num_connections << " connections" << endl;
     
     for (int i = 0; i < num_connections; ++i) {
         int a = free_a[i];
@@ -268,27 +208,8 @@ double rewire() {
         for (int j = 0; j < n_e; ++j) {
             row_sum += connections[i * n_e + j];
         }
-        delta_a[i] = std::floor(_array_E_a[i]) - row_sum;//k_in[i];
-        //if(delta_a[i] > 0){
-        //    temp_pos += delta_a[i];
-        //}else{
-        //    temp_neg += delta_a[i];
-        //}
+        delta_a[i] = std::floor(_array_E_a[i]) - row_sum;
     }
-
-    //cout << "Delta_a+ total: " << temp_pos << endl;
-    //cout << "Delta_a- total: " << temp_neg << endl;
-    
-    //cout << _array_E_phi[0] << endl; 
-    
-//    for(int i = 0; i < 100; i++){
-//        for(int j = 0; j < 100; j++){
-//            cout << _array_E_phi[i*100 + j] << " ";
-//        }
-//        cout << endl;
-//    }
-//    cout << endl;
-
 
     #ifdef DEBUG
     end = std::chrono::steady_clock::now();
@@ -317,20 +238,12 @@ double rewire() {
         }
     }
 
-    //cout << "Delta_d+ total: " << temp_pos << endl;
-    //cout << "Delta_d- total: " << temp_neg << endl;
-
     #ifdef DEBUG
     end = std::chrono::steady_clock::now();
     std::cout << "Deltas = " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;
     begin = end;
     #endif
 
-    //cout << endl << "delta_a" << endl;
-    //print_vec(delta_a);
-    //cout << endl << "con" << endl;
-    //print_as_2d(connections, n_e);
-    
     // delete axonal elements
     delete_connections_pre(connections, delta_a, n_e);
 
@@ -361,7 +274,7 @@ double rewire() {
     #endif
 
     // TODO: make void
-    return 0;//mean_connectivity;
+    return 0;
     }catch(std::exception& e){
         cout << e.what() << endl;
     }
@@ -381,15 +294,6 @@ double record_mean(int start_g1, int end_g1, int start_g2, int end_g2){
     }
 
     mean /= (end_g1 - start_g1) * (end_g2 - start_g2);
-    
-//    cout << '[' << start_g1 << ',' << end_g1 << "], [" << start_g2 << ',' << end_g2 << "]: " << mean << endl;
-//    
-//    double mean_phi = 0;
-//    for (int i = 0; i < n_e; ++i) {
-//        mean_phi += _array_E_phi[i];
-//    }
-//    cout << "mean_phi: " << mean_phi/n_e << endl;
-
     
     return mean;
 }

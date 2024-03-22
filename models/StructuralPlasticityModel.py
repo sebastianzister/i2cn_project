@@ -59,12 +59,10 @@ class StructuralPlasticityModel:
         # Equations for neuron dynamics 
         inh_eqs = '''
         dv/dt = (- v / tau_m) : volt (unless refractory)
-        nu_ext : 1
         '''
         #RI = poisson(nu_ext) * J: volt (constant over dt)
         exc_eqs = '''
         dv/dt = (- v / tau_m) : volt (unless refractory)
-        nu_ext : 1
         dphi/dt = - phi / tau_ca : Hz
         dd/dt = (nu - phi)/beta_d : 1
         da/dt = (nu - phi)/beta_a : 1
@@ -94,13 +92,9 @@ class StructuralPlasticityModel:
         # Create Neurons
         self.I = NeuronGroup(self.N_I, inh_eqs, threshold='v > v_th', reset='v=v_res', refractory=self.t_ref, method='euler', name='I')
         self.E = NeuronGroup(self.N_E, exc_eqs, threshold='v > v_th', reset='v=v_res\nphi+=(1/tau_ca)', refractory=self.t_ref, method='euler', name='E')
-        
-        #self.E.a = '1'
-        #self.E.d = '1'
 
-        self.E.nu_ext = self.nu_ext/ kHz
-        self.I.nu_ext = self.nu_ext/ kHz
-        
+        # Changed from poisson function to multiple slower PoissonInputs
+        # Has the same effect, but turned out to have better performance
         self.P_E_1 = PoissonInput(self.E[:1000], rate=self.nu_ext/15, target_var='v', N=15, weight=self.J)
         self.P_E_2 = PoissonInput(self.E[1000:], rate=self.nu_ext/15, target_var='v', N=15, weight=self.J)
         self.P_I = PoissonInput(self.I, rate=self.nu_ext/15, target_var='v', N=15, weight=self.J )
@@ -108,15 +102,12 @@ class StructuralPlasticityModel:
         self.network.add(self.P_E_1, self.P_E_2, self.P_I)
         # Static Synapses
         self.S_I_I = Synapses(self.I, self.I, on_pre='v_post += J_I', delay=self.delay, name='S_I_I')
-        #self.S_I_I.connect(condition='i != j', p=self.eps)
         self.S_I_I.connect(i='k for k in sample(N_I, size=CI)', namespace=self.namespace)
         
         self.S_I_E = Synapses(self.I, self.E, on_pre='v_post += J_I', delay=self.delay, name='S_I_E')
-        #self.S_I_E.connect(condition='i != j', p=self.eps)
         self.S_I_E.connect(i='k for k in sample(N_I, size=CI)', namespace=self.namespace)
         
         self.S_E_I = Synapses(self.E, self.I, on_pre='v_post += J', delay=self.delay, name='S_E_I')
-        #self.S_E_I.connect(condition='i != j', p=self.eps)
         self.S_E_I.connect(i='k for k in sample(N_E, size=CE)', namespace=self.namespace)
         
         # Dynamic synapses
@@ -129,10 +120,8 @@ class StructuralPlasticityModel:
         # Set up recording
         self.E_con = []
         self.E_con_t = []
-        #self.spike_mon_I = SpikeMonitor(self.I, name='spikemonitor')
-        #self.spike_mon_E = SpikeMonitor(self.E, name='spikemonitor_1')
 
-        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E)#, self.spike_mon_E, self.spike_mon_I)
+        self.network.add(self.E, self.I, self.S_I_I, self.S_I_E, self.S_E_I, self.S_E_E)
         
 
         if(self.standalone):
@@ -172,8 +161,6 @@ class StructuralPlasticityModel:
                 )
                 self.structural_plasticity = network_operation(dt=self.delta_T_s)(self.sp_manager.rewiring)
                 self.network.add(self.structural_plasticity)
-
-
             
     def sp_standalone(self):
         '''
@@ -213,31 +200,6 @@ class StructuralPlasticityModel:
 
         self.network.run(duration, namespace=self.namespace, report='text', report_period=20*second, **kwargs)
 
-    def plot(self):
-        """
-        Plots the spike trains of the excitatory and inhibitory neurons.
-        If plasticity is enabled, it also plots the average synaptic weight over time.
-
-        Returns:
-        None
-        """
-#        plt.plot(self.spike_mon_E.t/ms, self.spike_mon_E.i, ',k')
-#        plt.xlabel('Time (ms)')
-#        plt.ylabel('Neuron index')
-#        plt.title('Excitatory neurons')
-#        plt.show()
-#
-#        plt.plot(self.spike_mon_I.t/ms, self.spike_mon_I.i, ',k')
-#        plt.xlabel('Time (ms)')
-#        plt.ylabel('Neuron index')
-#        plt.title('Inhibitory neuron')
-#        plt.show()
-
-        if(self.enable_plasticity):
-            plt.plot(self.sp_manager.mean_con_t, self.sp_manager.mean_con)
-            plt.xlabel('Time (ms)')
-            plt.ylabel('Average synaptic weight')
-            plt.show()
 
 class StructuralPlasticityManager:
     """
