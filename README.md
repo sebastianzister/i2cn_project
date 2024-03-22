@@ -8,6 +8,8 @@ This project was done as part of the lecture ```Introduction to Computational Ne
 
 ### Final Result:
 
+![plot](https://github.com/sebastianzister/i2cn_project/assets/81309130/f1c000af-6cfa-4a97-bf4e-e7459a9864c7)
+
 ### How to use:
 <ol>
     <li> Run notebook <code>01_grow_network.ipynb</code>  to generate the data and a preliminary plot <br><strong>Make sure you change the number of threads used!</strong>
